@@ -1,0 +1,12 @@
+{
+  "name": "WeRemember",
+  "short_name": "记得",
+  "description": "保质期提醒与说明书库",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbf3e8",
+  "theme_color": "#fbf3e8",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
