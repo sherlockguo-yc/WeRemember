@@ -1,0 +1,86 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # 与 N150 用同一个大版本：better-sqlite3 是原生模块，ABI 必须一致
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Get version
+        id: ver
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # 产物不含 node_modules：依赖由 restart.sh 在 N150 现场安装（原生模块不能跨机器拷贝）
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p pkg
+          cp -r server public package.json package-lock.json pkg/
+          cp scripts/restart-n150.sh pkg/restart.sh
+          chmod +x pkg/restart.sh
+          # deploy-agent 会比对包内 .version 与 Release tag，不一致直接判失败
+          echo "${{ steps.ver.outputs.sha }}" > pkg/.version
+          tar -czf weremember.tar.gz -C pkg .
+          echo "产物 $(du -h weremember.tar.gz | cut -f1)"
+          tar -tzf weremember.tar.gz | grep -q '^./public/dist/app.js$'
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.ver.outputs.sha }}
+          name: ${{ steps.ver.outputs.sha }}
+          body: 'Auto build ${{ steps.ver.outputs.sha }}'
+          files: weremember.tar.gz
+          prerelease: true
+
+      # R2 是私有仓库部署所必需的下载通道；未配置 Secrets 时自动跳过
+      - name: Upload to R2
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${R2_BUCKET:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ]; then
+            echo "R2 未配置，跳过上传"
+            exit 0
+          fi
+          aws s3 cp weremember.tar.gz \
+            "s3://${R2_BUCKET}/weremember/${{ steps.ver.outputs.sha }}/weremember.tar.gz" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --no-progress
+
+      - name: Notify N150
+        continue-on-error: true
+        run: |
+          sleep 20
+          curl -sS -X POST https://wemusic.sherlockguo.com/deploy \
+            -H "Content-Type: application/json" \
+            -d "{\"project\":\"weremember\",\"version\":\"${{ steps.ver.outputs.sha }}\"}" \
+            --max-time 10 --connect-timeout 5 || true
