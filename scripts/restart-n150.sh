@@ -64,6 +64,14 @@ if ! ensure_deps; then
   exit 1
 fi
 
+# ── OCR 资源 ─────────────────────────────────────────────────────────
+# public/vendor 不在产物里，且 deploy-agent 的 rsync --delete 每次都会清掉它，所以每次部署都要重新同步
+# （从已安装的依赖拷 16MB 本地文件，毫秒级，不走网络）。
+# 失败只降级：OCR 不可用，但提醒、录入等主功能不受影响，所以不阻止重启。
+if ! "$NODE" "$DIR/scripts/sync-ocr.mjs" "$DIR/public/vendor/tesseract" "$DEPS_DIR"; then
+  log "⚠ OCR 资源同步失败，拍照识别暂不可用（其余功能不受影响）"
+fi
+
 # ── 配置 ─────────────────────────────────────────────────────────────
 # .env 受 rsync --exclude 保护，跨版本持久。set -a 让 "KEY=value" 与 "export KEY=value" 两种写法都生效。
 if [ -f "$DIR/.env" ]; then set -a; . "$DIR/.env"; set +a; fi

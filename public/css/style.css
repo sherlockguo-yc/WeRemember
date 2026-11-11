@@ -62,6 +62,8 @@ body {
 }
 button { font-family: inherit; }
 svg { flex-shrink: 0; }
+/* 任何设置了 display 的元素（flex/grid）都会盖掉浏览器默认的 [hidden]，这里统一兜底 */
+[hidden] { display: none !important; }
 
 /* ========== 按钮 ========== */
 .btn {
@@ -108,6 +110,7 @@ label.lbl { display: block; font-size: calc(var(--font-size) * 0.85); color: var
 .field-row.ratio { grid-template-columns: 1.3fr 1fr; }
 .hint { font-size: calc(var(--font-size) * 0.82); color: var(--text-dim); margin-top: calc(var(--font-size) * 0.35); }
 .hint.warn { color: var(--st-priority); }
+.input.ocr-filled { background: var(--accent-soft); border-color: var(--accent); transition: background 0.4s, border-color 0.4s; }
 .err { color: var(--danger); font-size: calc(var(--font-size) * 0.88); margin-top: calc(var(--font-size) * 0.5); min-height: 1.2em; }
 
 /* 分段单选（2-6 项单选） */

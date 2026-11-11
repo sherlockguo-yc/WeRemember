@@ -5,6 +5,7 @@ import {
   withBusy, UNIT_LABEL, previewExpiry,
 } from './ui.js';
 import { IC } from './icons.js';
+import { recognizePackaging } from './ocr.js';
 
 let scope = 'active';
 let seq = 0;
@@ -218,7 +219,10 @@ function openForm(item) {
       <div class="field">
         <span class="lbl">包装日期照片（选填）</span>
         <input class="input" id="f-photo" type="file" accept="image/*">
-        <div class="hint">先存下来，以后可自动识别日期。${editing && item.has_photo ? '已有照片，选择新照片会替换。' : ''}</div>
+        <div class="inline-actions" id="ocr-row" hidden>
+          <button type="button" class="btn sm" id="ocr-run">${IC.camera(16)}识别日期</button>
+        </div>
+        <div class="hint" id="ocr-hint">${editing && item.has_photo ? '已有照片，选择新照片会替换。' : '拍下包装上印日期的位置，可自动识别并预填，你核对后再保存。'}</div>
       </div>
       <div class="err" id="f-err" role="alert"></div>
       <div class="btn-row">
@@ -246,6 +250,90 @@ function openForm(item) {
   $('#f-mode').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { mode = b.dataset.v; refresh(); } });
   ['#f-prod', '#f-val', '#f-unit'].forEach((s) => $(s).addEventListener('input', refresh));
   refresh();
+
+  // ---- 拍照识别：只预填，不自动保存；已填写的字段需用户确认才覆盖 ----
+  const fillField = (sel, val) => { $(sel).value = val; $(sel).dispatchEvent(new Event('input', { bubbles: true })); };
+  const flash = (sel) => {
+    const el = $(sel);
+    el.classList.add('ocr-filled');
+    setTimeout(() => el.classList.remove('ocr-filled'), 4000);
+  };
+  $('#f-photo').addEventListener('change', () => {
+    const f = $('#f-photo').files[0];
+    $('#ocr-row').hidden = !f;
+    if (f) $('#ocr-hint').textContent = '点「识别日期」自动读取包装上的日期；也可以直接保存照片，稍后再手动填写。';
+  });
+  $('#ocr-run').addEventListener('click', async (e) => {
+    const file = $('#f-photo').files[0];
+    const hint = $('#ocr-hint');
+    if (!file) return;
+    await withBusy(e.currentTarget, async () => {
+      let r;
+      try {
+        r = await recognizePackaging(file, (t) => { hint.textContent = t; });
+      } catch (ex) {
+        hint.textContent = '';
+        toast(ex.message || '识别失败，请手动填写', true);
+        return;
+      }
+      const p = r.parsed;
+      const unitText = (sl) => `${sl.value} ${UNIT_LABEL[sl.unit]}`;
+      // 1) 先收集：每个字段 = { label, apply(), existing, next }
+      const changes = [];
+      if (p.production_date) {
+        changes.push({ label: '生产日期', existing: $('#f-prod').value, next: p.production_date,
+          apply: () => { fillField('#f-prod', p.production_date); flash('#f-prod'); } });
+      }
+      if (p.expiry_date) {
+        changes.push({ label: '到期日期', existing: mode === 'expiry' ? $('#f-exp').value : '', next: p.expiry_date,
+          apply: () => { mode = 'expiry'; refresh(); fillField('#f-exp', p.expiry_date); flash('#f-exp'); } });
+      } else if (p.shelf_life) {
+        const cur = mode === 'duration' && $('#f-val').value
+          ? `${$('#f-val').value} ${UNIT_LABEL[$('#f-unit').value]}` : '';
+        changes.push({ label: '保质期', existing: cur, next: unitText(p.shelf_life),
+          apply: () => {
+            mode = 'duration'; refresh();
+            fillField('#f-val', String(p.shelf_life.value)); fillField('#f-unit', p.shelf_life.unit); flash('#f-val');
+          } });
+      }
+      // 2) 只有"已有不同值"的字段才需要确认；有冲突时合并成一个对话框
+      const conflicts = changes.filter((c) => c.existing && c.existing !== c.next);
+      let overwrite = true;
+      if (conflicts.length) {
+        overwrite = await confirmDialog({
+          title: '用识别结果替换已填内容？',
+          message: conflicts.map((c) => `${c.label}：${c.existing} → ${c.next}`).join('；'),
+          okText: '全部替换',
+        });
+      }
+      // 3) 应用：无冲突的字段总是填；有冲突的字段仅在用户同意时填
+      const filled = [];
+      const skipped = [];
+      for (const c of changes) {
+        const isConflict = conflicts.includes(c);
+        if (isConflict && !overwrite) { skipped.push(c.label); continue; }
+        c.apply(); filled.push(c.label);
+      }
+      const guessed = Object.values(p.sources).includes('position');
+      const lines = [];
+      if (filled.length) {
+        // 复述识别到的原始文字：OCR 最常见的错误是"差一位"（如 11 月读成 1 月），
+        // 结果仍是合法日期，程序无法判断，只能让用户拿原文对照照片。
+        const quoted = [
+          ['生产日期', p.raws.production_date], ['到期日期', p.raws.expiry_date], ['保质期', p.raws.shelf_life],
+        ].filter(([label, raw]) => raw && filled.includes(label)).map(([label, raw]) => `${label}读到的是「${raw}」`);
+        lines.push(`已预填：${filled.join('、')}。${quoted.length ? `${quoted.join('，')}。` : ''}请对照照片核对数字再保存。`);
+      }
+      if (guessed) lines.push('部分日期没有文字标签，是按位置推测的，务必核对。');
+      lines.push(...p.notes);
+      if (!filled.length && !skipped.length) {
+        lines.length = 0;
+        lines.push('没有识别到日期。请让日期占满画面、光线充足再试一次，或直接手动填写。');
+      }
+      hint.textContent = lines.join(' ');
+      hint.classList.toggle('warn', guessed || !filled.length || p.notes.length > 0);
+    });
+  });
 
   $('#item-form').addEventListener('submit', async (e) => {
     e.preventDefault();

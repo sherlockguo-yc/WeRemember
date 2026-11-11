@@ -4,3 +4,4 @@ public/dist/
 .env
 *.log
 .DS_Store
+public/vendor/
