@@ -50,9 +50,11 @@ jobs:
           echo "${{ steps.ver.outputs.sha }}" > pkg/.version
           tar -czf weremember.tar.gz -C pkg .
           echo "产物 $(du -h weremember.tar.gz | cut -f1)"
-          tar -tzf weremember.tar.gz | grep -q '^./public/dist/app.js$'
-          tar -tzf weremember.tar.gz | grep -q '^./scripts/sync-ocr.mjs$'
-          ! tar -tzf weremember.tar.gz | grep -q 'public/vendor'
+          # 先落盘再逐条检查：pipefail 下 `tar | grep -q` 在 grep 提前退出时会因 SIGPIPE 误判失败
+          tar -tzf weremember.tar.gz > manifest.txt
+          grep -qx './public/dist/app.js' manifest.txt
+          grep -qx './scripts/sync-ocr.mjs' manifest.txt
+          if grep -q 'public/vendor' manifest.txt; then echo "产物不应包含 public/vendor"; exit 1; fi
 
       - name: Upload Release
         uses: softprops/action-gh-release@v3
