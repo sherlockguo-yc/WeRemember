@@ -105,6 +105,17 @@ const SCHEMA = `
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_items_group ON items(group_id, status);
   CREATE INDEX IF NOT EXISTS idx_manuals_group ON manuals(group_id);
   CREATE INDEX IF NOT EXISTS idx_members_user ON group_members(user_id);

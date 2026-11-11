@@ -6,6 +6,7 @@ import { renderLogin } from './auth.js';
 import { renderItems } from './items.js';
 import { renderManuals } from './manuals.js';
 import { renderSettings, bindSettings } from './settings.js';
+import { registerSW } from './push.js';
 
 const TABS = [
   { id: 'items', label: '保质期', icon: IC.clock, render: () => renderItems() },
@@ -83,6 +84,7 @@ async function boot() {
   go('items');
 }
 
+registerSW();
 onAuthLost(showLogin);
 bindSettings({
   onGroupsChange,

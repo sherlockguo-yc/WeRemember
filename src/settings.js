@@ -4,6 +4,7 @@ import {
   esc, toast, showModal, hideModal, confirmDialog, modalHead, bindClose, withBusy, fmtTs,
 } from './ui.js';
 import { IC } from './icons.js';
+import { pushState, enablePush, disablePush } from './push.js';
 
 let profile = null;
 let afterGroupsChange = () => {};
@@ -42,7 +43,7 @@ export async function renderSettings() {
   }
   const p = profile;
   const failed = logs.filter((l) => l.status === 'failed')[0];
-  const CH = { serverchan: '微信', email: '邮件' };
+  const CH = { serverchan: '微信', email: '邮件', push: '设备通知' };
 
   view.innerHTML = `
     <div class="panel">
@@ -74,6 +75,11 @@ export async function renderSettings() {
       <div class="field" style="margin-top:.6rem"><label class="lbl" for="s-email">收件邮箱</label>
         <input class="input" id="s-email" type="email" inputmode="email" placeholder="you@qq.com" value="${esc(p.email)}" autocomplete="email"></div>
       <div class="inline-actions"><button class="btn sm" id="s-em-test" ${p.mail_available ? '' : 'disabled'}>${IC.bell(16)}发送测试邮件</button></div>
+
+      <div class="row" style="margin-top:1rem"><div class="grow"><div class="title">本设备通知</div>
+        <div class="sub" id="s-push-sub">检测中…</div></div>
+        <label class="toggle-switch" aria-label="本设备通知"><input type="checkbox" id="s-push-on" disabled><span class="toggle-track"></span></label></div>
+      <div class="inline-actions"><button class="btn sm" id="s-push-test" hidden>${IC.bell(16)}发送测试通知</button></div>
 
       <div class="err" id="s-err" role="alert"></div>
       <div class="btn-row"><button class="btn primary" id="s-save-notify">保存提醒设置</button></div>
@@ -139,6 +145,8 @@ export async function renderSettings() {
   }));
   testChannel('#s-sc-test', 'serverchan');
   testChannel('#s-em-test', 'email');
+  testChannel('#s-push-test', 'push');
+  bindPush(view);
 
   $('#g-create').addEventListener('click', openCreateGroup);
   $('#g-join').addEventListener('click', openJoinGroup);
@@ -161,6 +169,40 @@ export async function renderSettings() {
     }));
     drawInvites();
   }
+}
+
+const PUSH_TEXT = {
+  unsupported: '当前浏览器不支持通知',
+  'need-install': 'iPhone 需先在 Safari 点「分享 → 添加到主屏幕」，再从主屏幕图标打开才能开启',
+  denied: '通知权限已被拒绝，请在系统或浏览器设置里允许后重试',
+  unavailable: '服务器未启用浏览器通知',
+  off: '未开启。开启后，每天的汇总会推送到这台设备',
+  on: '已开启，汇总会推送到这台设备',
+};
+
+async function bindPush(view) {
+  const sw = view.querySelector('#s-push-on');
+  const sub = view.querySelector('#s-push-sub');
+  const testBtn = view.querySelector('#s-push-test');
+  const draw = async () => {
+    let r;
+    try { r = await pushState(); } catch { r = { state: 'unavailable' }; }
+    sub.textContent = PUSH_TEXT[r.state] || '';
+    sw.checked = r.state === 'on';
+    sw.disabled = !['on', 'off'].includes(r.state);
+    testBtn.hidden = r.state !== 'on';
+    return r.state;
+  };
+  await draw();
+  sw.addEventListener('change', async () => {
+    const want = sw.checked;
+    sw.disabled = true;
+    try {
+      if (want) await enablePush(); else await disablePush();
+      toast(want ? '已开启本设备通知' : '已关闭本设备通知');
+    } catch (ex) { toast(ex.message || '操作失败', true); }
+    await draw();
+  });
 }
 
 function openPassword() {

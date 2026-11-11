@@ -17,13 +17,18 @@ async function setup(over = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wr-'));
   const db = openDB(':memory:');
   let nowMs = Date.UTC(2026, 10, 11, 1, 0); // 北京时间 2026-11-11 09:00
-  const sent = { serverchan: [], email: [] };
+  const sent = { serverchan: [], email: [], push: [] };
   const ctx = {
     db, dataDir, jwtSecret: 'test-secret', env: { ADMIN_INVITE_CODE: 'BOOT123', SMTP_USER: 'bot@qq.com', SMTP_PASS: 'x', ...over.env },
+    vapid: { publicKey: 'test-public-key', privateKey: 'test-private-key', subject: 'mailto:bot@qq.com' },
     now: () => nowMs,
     senders: {
       serverchan: async (key, title, md) => { sent.serverchan.push({ key, title, md }); return over.scFail ? { ok: false, error: 'boom' } : { ok: true }; },
       email: async (to, title, text) => { sent.email.push({ to, title, text }); return { ok: true }; },
+      push: async (sub, payload) => {
+        sent.push.push({ endpoint: sub.endpoint, payload });
+        return over.pushResult ? over.pushResult(sub) : { ok: true };
+      },
     },
   };
   ensureBootstrapInvite(db, ctx.env);
@@ -415,4 +420,100 @@ test('邮件：未配置发件箱/收件地址非法/发送异常', async () => 
   assert.equal(sent[0].to, 'a@qq.com');
   const fail = await sendMail('a@qq.com', 's', 't', { env: { SMTP_USER: 'x@qq.com', SMTP_PASS: 'p' }, transport: { sendMail: async () => { throw new Error('auth failed'); } } });
   assert.match(fail.error, /auth failed/);
+});
+
+// ========== Web Push ==========
+
+test('Web Push：订阅格式校验', async () => {
+  const s = await setup();
+  const { a } = await twoUsers(s);
+  const r1 = await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: null } });
+  assert.equal(r1.status, 400);
+  assert.match(r1.body.error, /缺失/);
+  const r2 = await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: { endpoint: 'not-https', keys: { p256dh: 'abc', auth: 'def' } } } });
+  assert.equal(r2.status, 400);
+  assert.match(r2.body.error, /格式/);
+  const r3 = await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: { endpoint: 'https://fcm.googleapis.com/v1/foo', keys: { p256dh: 'abc', auth: 'def' } } } });
+  assert.equal(r3.status, 400);
+  assert.match(r3.body.error, /Google/);
+  s.close();
+});
+
+test('Web Push：订阅 → 查询状态 → 测试推送 → 取消订阅', async () => {
+  const s = await setup();
+  const { a } = await twoUsers(s);
+  const sub = { endpoint: 'https://updates.push.services.mozilla.com/123', keys: { p256dh: 'abc123', auth: 'def456' } };
+  // 订阅前：状态返回 subscribed=false
+  const status1 = await s.call('POST', '/api/push/status', { token: a.token, json: { endpoint: sub.endpoint } });
+  assert.equal(status1.body.subscribed, false);
+  // 订阅
+  const r1 = await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: sub } });
+  assert.equal(r1.status, 200);
+  assert.equal(s.db.prepare('SELECT COUNT(*) c FROM push_subscriptions').get().c, 1);
+  // 订阅后：状态返回 subscribed=true
+  const status2 = await s.call('POST', '/api/push/status', { token: a.token, json: { endpoint: sub.endpoint } });
+  assert.equal(status2.body.subscribed, true);
+  // 测试推送
+  const testRes = await s.call('POST', '/api/me/test-channel', { token: a.token, json: { channel: 'push' } });
+  assert.equal(testRes.status, 200);
+  assert.equal(s.sent.push.length, 1);
+  assert.equal(s.sent.push[0].endpoint, sub.endpoint);
+  assert.match(s.sent.push[0].payload.body, /已配置成功/);
+  // 取消订阅
+  const r2 = await s.call('POST', '/api/push/unsubscribe', { token: a.token, json: { endpoint: sub.endpoint } });
+  assert.equal(r2.status, 200);
+  assert.equal(s.db.prepare('SELECT COUNT(*) c FROM push_subscriptions').get().c, 0);
+  s.close();
+});
+
+test('Web Push：同一 endpoint 换账号后，推送归属转给当前账号', async () => {
+  const s = await setup();
+  const { a, b } = await twoUsers(s);
+  const endpoint = 'https://web.push.apple.com/xyz';
+  const sub = { endpoint, keys: { p256dh: 'abc', auth: 'def' } };
+  await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: sub } });
+  let owner = s.db.prepare('SELECT user_id FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
+  assert.equal(owner.user_id, a.user.id);
+  // B 用户同一台设备订阅，endpoint 转归 B
+  await s.call('POST', '/api/push/subscribe', { token: b.token, json: { subscription: sub } });
+  owner = s.db.prepare('SELECT user_id FROM push_subscriptions WHERE endpoint = ?').get(endpoint);
+  assert.equal(owner.user_id, b.user.id);
+  assert.equal(s.db.prepare('SELECT COUNT(*) c FROM push_subscriptions').get().c, 1);
+  s.close();
+});
+
+test('Web Push：汇总推送、失效订阅自动清理、至少一台成功即算成功', async () => {
+  const s = await setup({
+    pushResult: (sub) => (sub.endpoint.includes('GONE') ? { ok: false, gone: true, error: '已失效' } : { ok: true }),
+  });
+  const { a } = await twoUsers(s);
+  const gid = (await s.call('GET', '/api/groups', { token: a.token })).body.groups[0].id;
+  const today = todayBJ(s.getNow());
+  await s.call('POST', '/api/items', { token: a.token, json: { group_id: gid, name: '牛奶', category: 'food', expiry_date: addDays(today, -1) } });
+  // 登记两台设备：一台已失效、一台正常
+  const sub1 = { endpoint: 'https://web.push.apple.com/GONE', keys: { p256dh: 'abc1', auth: 'def1' } };
+  const sub2 = { endpoint: 'https://web.push.apple.com/OK', keys: { p256dh: 'abc2', auth: 'def2' } };
+  await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: sub1 } });
+  await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: sub2 } });
+  assert.equal(s.db.prepare('SELECT COUNT(*) c FROM push_subscriptions').get().c, 2);
+  // runDispatch 成功发送，失效订阅被清理
+  const rep = await runDispatch(s.db, s.ctx.senders, s.getNow());
+  assert.equal(rep.length, 1);
+  assert.equal(rep[0].ok, true);
+  assert.equal(s.sent.push.length, 2);
+  assert.equal(s.db.prepare('SELECT COUNT(*) c FROM push_subscriptions').get().c, 1);
+  assert.equal(s.db.prepare('SELECT endpoint FROM push_subscriptions').get().endpoint, sub2.endpoint);
+  s.close();
+});
+
+test('Web Push：超过 10 台设备拒绝新订阅', async () => {
+  const s = await setup();
+  const { a } = await twoUsers(s);
+  for (let i = 0; i < 10; i += 1) {
+    await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: { endpoint: `https://web.push.apple.com/${i}`, keys: { p256dh: 'abc', auth: 'def' } } } });
+  }
+  const r = await s.call('POST', '/api/push/subscribe', { token: a.token, json: { subscription: { endpoint: 'https://web.push.apple.com/11', keys: { p256dh: 'abc', auth: 'def' } } } });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /最多.*10.*设备/);
+  s.close();
 });

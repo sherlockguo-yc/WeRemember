@@ -5,6 +5,8 @@ import { uniqueCode } from '../lib/codes.js';
 import {
   isValidEmail, isValidSendKey, mailConfigured, mailSenderAddress,
 } from '../lib/channels.js';
+import { checkSubscription } from '../lib/webpush.js';
+import { sendPushToUser } from '../lib/dispatch.js';
 
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
@@ -29,6 +31,8 @@ function publicProfile(row, env) {
     mail_sender: mailSenderAddress(env),
   };
 }
+
+const MAX_DEVICES = 10;
 
 export function accountRoutes(ctx) {
   const router = Router();
@@ -113,10 +117,58 @@ export function accountRoutes(ctx) {
       if (!row.email) return res.status(400).json({ error: '请先保存邮箱' });
       result = await ctx.senders.email(row.email, 'WeRemember 测试邮件',
         '这是一封测试邮件。收到它说明邮件提醒已配置成功。');
+    } else if (channel === 'push') {
+      if (!ctx.vapid) return res.status(400).json({ error: '服务器未启用浏览器推送' });
+      result = await sendPushToUser(db, ctx.senders, req.uid, 'WeRemember 测试通知',
+        '收到这条通知，说明这台设备的推送已配置成功。');
     } else {
       return res.status(400).json({ error: '未知渠道' });
     }
     if (!result.ok) return res.status(502).json({ error: result.error });
+    res.json({ success: true });
+  });
+
+  // ---- 浏览器推送（Web Push） ----
+  router.get('/push/config', (req, res) => {
+    const n = db.prepare('SELECT COUNT(*) c FROM push_subscriptions WHERE user_id = ?').get(req.uid).c;
+    res.json({ available: Boolean(ctx.vapid), public_key: ctx.vapid ? ctx.vapid.publicKey : '', devices: n });
+  });
+
+  // 查询当前这台设备是否已订阅（按 endpoint），用于设置页显示开关状态
+  router.post('/push/status', (req, res) => {
+    const endpoint = String((req.body && req.body.endpoint) || '');
+    const row = endpoint
+      ? db.prepare('SELECT 1 FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').get(req.uid, endpoint)
+      : null;
+    res.json({ subscribed: Boolean(row) });
+  });
+
+  router.post('/push/subscribe', (req, res) => {
+    if (!ctx.vapid) return res.status(400).json({ error: '服务器未启用浏览器推送' });
+    const sub = req.body && req.body.subscription;
+    const v = checkSubscription(sub);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    const exists = db.prepare('SELECT user_id FROM push_subscriptions WHERE endpoint = ?').get(sub.endpoint);
+    if (!exists) {
+      const n = db.prepare('SELECT COUNT(*) c FROM push_subscriptions WHERE user_id = ?').get(req.uid).c;
+      if (n >= MAX_DEVICES) return res.status(400).json({ error: `最多登记 ${MAX_DEVICES} 台设备，请先关闭不用的设备` });
+    }
+    // 同一台设备换账号登录时，endpoint 归属转给当前账号（UNIQUE 保证一台设备只给一个账号推送）
+    db.prepare(`
+      INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh,
+        auth = excluded.auth, user_agent = excluded.user_agent
+    `).run(req.uid, sub.endpoint, sub.keys.p256dh, sub.keys.auth,
+      String(req.headers['user-agent'] || '').slice(0, 200), ctx.now());
+    res.json({ success: true });
+  });
+
+  router.post('/push/unsubscribe', (req, res) => {
+    const endpoint = String((req.body && req.body.endpoint) || '');
+    if (!endpoint) return res.status(400).json({ error: '推送地址缺失' });
+    // 只删自己名下、按 endpoint 精确匹配的订阅
+    db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').run(req.uid, endpoint);
     res.json({ success: true });
   });
 

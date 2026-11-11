@@ -1,14 +1,36 @@
 import { todayBJ, hourBJ } from './dates.js';
 import { dueReminder, reminderLine, CATEGORY_LABEL } from './reminder-rules.js';
+import { pushPayload } from './webpush.js';
 
 const MAX_ATTEMPTS = 3;
 const RETRY_GAP_MS = 30 * 60 * 1000;
 
-export function enabledChannels(user) {
+export function enabledChannels(user, hasPush = false) {
   const ch = [];
   if (user.notify_serverchan && user.serverchan_key) ch.push('serverchan');
   if (user.notify_email && user.email) ch.push('email');
+  if (hasPush) ch.push('push');
   return ch;
+}
+
+// 向该用户所有设备推送。至少一台成功即算成功；404/410 的失效订阅顺手清理。
+// senders.push(sub, payload) -> { ok, gone?, error? }
+export async function sendPushToUser(db, senders, userId, title, body) {
+  const subs = db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ?').all(userId);
+  if (!subs.length) return { ok: false, error: '没有已开启推送的设备' };
+  const payload = pushPayload(title, body);
+  const del = db.prepare('DELETE FROM push_subscriptions WHERE id = ?');
+  let okCount = 0;
+  let lastError = '';
+  for (const sub of subs) {
+    const r = await senders.push(sub, payload);
+    if (r.ok) okCount += 1;
+    else {
+      lastError = r.error || lastError;
+      if (r.gone) del.run(sub.id);
+    }
+  }
+  return okCount ? { ok: true } : { ok: false, error: lastError || '推送失败' };
 }
 
 // 用户所属各组中、仍在进行的物品，附带该用户的提醒进度
@@ -92,14 +114,15 @@ function recordAttempt(db, userId, today, channel, result, count, now) {
 }
 
 // 一次调度：对每个开启了渠道、且已到发送时刻的用户发送当天汇总。
-// senders = { serverchan(key, title, markdown), email(to, title, text) }，便于测试注入。
+// senders = { serverchan(key, title, markdown), email(to, title, text), push(sub, payload) }，便于测试注入。
 export async function runDispatch(db, senders, now = Date.now()) {
   const today = todayBJ(now);
   const hour = hourBJ(now);
   const users = db.prepare('SELECT * FROM users').all();
+  const pushUsers = new Set(db.prepare('SELECT DISTINCT user_id FROM push_subscriptions').all().map((r) => r.user_id));
   const report = [];
   for (const user of users) {
-    const channels = enabledChannels(user);
+    const channels = enabledChannels(user, pushUsers.has(user.id));
     if (!channels.length || hour < user.notify_hour) continue;
     const pending = channels.filter((c) => !isPaused(db, user.id, today, c, now));
     if (!pending.length) continue;
@@ -109,9 +132,10 @@ export async function runDispatch(db, senders, now = Date.now()) {
     const msg = formatDigest(lines);
 
     for (const channel of pending) {
-      const result = channel === 'serverchan'
-        ? await senders.serverchan(user.serverchan_key, msg.title, msg.markdown)
-        : await senders.email(user.email, msg.title, msg.text);
+      let result;
+      if (channel === 'serverchan') result = await senders.serverchan(user.serverchan_key, msg.title, msg.markdown);
+      else if (channel === 'email') result = await senders.email(user.email, msg.title, msg.text);
+      else result = await sendPushToUser(db, senders, user.id, msg.title, msg.text);
       recordAttempt(db, user.id, today, channel, result, lines.length, now);
       report.push({ user: user.username, channel, ok: result.ok, error: result.error });
     }
