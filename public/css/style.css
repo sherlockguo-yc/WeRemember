@@ -203,14 +203,26 @@ label.lbl { display: block; font-size: calc(var(--font-size) * 0.85); color: var
 .section-title.urgent .count { background: var(--st-soon-bg); color: var(--st-soon); }
 .list { display: flex; flex-direction: column; gap: calc(var(--font-size) * 0.6); }
 .card {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: calc(var(--font-size) * 0.8);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: calc(var(--font-size) * 0.6);
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: calc(var(--font-size) * 0.9) calc(var(--font-size) * 1); cursor: pointer; text-align: left; width: 100%;
+  padding: calc(var(--font-size) * 0.9) calc(var(--font-size) * 0.7) calc(var(--font-size) * 0.9) calc(var(--font-size) * 1);
+  cursor: pointer; text-align: left; width: 100%;
   font-size: inherit; color: inherit; box-shadow: var(--shadow-sm);
   border-left: 5px solid var(--border);
   transition: transform 0.12s, box-shadow 0.15s, border-color 0.15s;
 }
 .card:hover { transform: translateY(-1px); box-shadow: var(--shadow); border-color: var(--accent-2); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 列表上的快捷删除：常显（触屏没有 hover），44px 触控面积 */
+.card-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border: none; border-radius: 50%;
+  background: transparent; color: var(--text-muted); cursor: pointer; flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.card-del:hover { background: var(--bg-hover); color: var(--danger); }
+.card-del:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card-del:active { background: var(--bg-soft); }
 .card.s-notice { border-left-color: var(--st-notice); }
 .card.s-priority { border-left-color: var(--st-priority); }
 .card.s-soon { border-left-color: var(--st-soon); }

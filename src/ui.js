@@ -76,6 +76,15 @@ export function bindClose(root = document.getElementById('modal')) {
   root.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', hideModal));
 }
 
+// Esc 关闭最上层弹窗：确认框优先于普通弹窗。键盘用户没有"关闭"按钮就出不去了。
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const confirmMask = document.getElementById('confirm-modal');
+  if (confirmMask && confirmMask.classList.contains('show')) { closeMask(confirmMask); return; }
+  const mask = document.getElementById('modal');
+  if (mask && mask.classList.contains('show')) closeMask(mask);
+});
+
 export function emptyState(icon, title, sub = '') {
   return `<div class="empty-state"><div class="es-icon">${icon}</div><p>${esc(title)}</p>${sub ? `<p class="hint">${esc(sub)}</p>` : ''}</div>`;
 }

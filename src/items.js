@@ -18,6 +18,10 @@ const remainText = (st) => {
 };
 const URGENT = new Set(['notice', 'priority', 'soon', 'today', 'expired']);
 
+// 卡片用 div + role=button：里面要放「删除」按钮，不能嵌套 <button>（无效 HTML，点击也会冒泡去开详情）
+const delBtn = (it) => `
+  <button class="card-del" data-del="${it.id}" aria-label="删除 ${esc(it.name)}" title="删除记录">${IC.trash(17)}</button>`;
+
 function card(it) {
   const st = it.state;
   const meta = [
@@ -28,14 +32,15 @@ function card(it) {
   if (scope === 'history') {
     const kindLabel = it.processed_kind === 'used' ? '已用完' : '已丢弃';
     return `
-      <button class="card" data-id="${it.id}">
+      <div class="card" role="button" tabindex="0" data-id="${it.id}">
         <div><div class="name">${esc(it.name)}</div><div class="meta">${meta}</div>
           <div class="note-line">${esc(it.processed_by_name || '')} 标记</div></div>
         <div class="side"><span class="badge b-${esc(it.processed_kind)}">${kindLabel}</span></div>
-      </button>`;
+        ${delBtn(it)}
+      </div>`;
   }
   return `
-    <button class="card s-${esc(st.key)}" data-id="${it.id}">
+    <div class="card s-${esc(st.key)}" role="button" tabindex="0" data-id="${it.id}">
       <div>
         <div class="name">${esc(it.name)}</div>
         <div class="meta">${meta}</div>
@@ -45,7 +50,8 @@ function card(it) {
         <span class="badge b-${esc(st.key)}">${esc(st.label)}</span>
         <div class="remain">${esc(remainText(st))}</div>
       </div>
-    </button>`;
+      ${delBtn(it)}
+    </div>`;
 }
 
 export async function renderItems() {
@@ -93,7 +99,34 @@ export async function renderItems() {
       + (rest.length ? `<div class="section-title">其他物品 <span class="count">${rest.length}</span></div><div class="list">${rest.map(card).join('')}</div>` : '');
   }
   body.innerHTML = html;
-  body.querySelectorAll('.card').forEach((c) => c.addEventListener('click', () => openDetail(byId.get(Number(c.dataset.id)))));
+  body.querySelectorAll('.card').forEach((c) => {
+    const open = () => openDetail(byId.get(Number(c.dataset.id)));
+    c.addEventListener('click', (e) => { if (!e.target.closest('[data-del]')) open(); });
+    // role=button 的元素不会自动响应键盘，手动补上
+    c.addEventListener('keydown', (e) => {
+      if (e.target !== c) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
+  body.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const it = byId.get(Number(b.dataset.del));
+    if (!it) return;
+    withBusy(b, async () => {
+      const ok = await confirmDialog({
+        title: '删除记录',
+        message: `确定删除「${it.name}」？记录和照片会一并删除，无法恢复。`,
+        okText: '删除',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api.del(`/api/items/${it.id}`);
+        toast('已删除');
+        renderItems();
+      } catch (ex) { toast(ex.message, true); }
+    });
+  }));
 }
 
 async function openDetail(it) {
