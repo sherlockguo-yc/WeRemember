@@ -15,9 +15,15 @@ const TABS = [
 ];
 let current = 'items';
 
+/** 浏览器标题跟当前页面走：外部列表/标签页里显示「WeRemember · 保质期」 */
+function setTitle(label) {
+  document.title = label ? `WeRemember · ${label}` : 'WeRemember';
+}
+
 function showLogin() {
   hideModal();
   state.user = null;
+  setTitle('登录');
   renderLogin(boot);
 }
 
@@ -39,7 +45,9 @@ function go(tab) {
     b.classList.toggle('active', on);
     b.setAttribute('aria-selected', String(on));
   });
-  document.getElementById('top-title').textContent = TABS.find((t) => t.id === tab).label;
+  const label = TABS.find((t) => t.id === tab).label;
+  document.getElementById('top-title').textContent = label;
+  setTitle(label);
   drawGroupSelect();
   TABS.find((t) => t.id === tab).render();
 }
